@@ -22,7 +22,7 @@ from absl import logging
 import tensorflow.compat.v1 as tf
 
 from tensorflow_privacy.privacy.analysis import privacy_ledger
-from tensorflow_privacy.privacy.dp_query import gaussian_query
+from tensorflow_privacy.privacy.dp_query import gaussian_query, normalized_query, quantile_adaptive_clip_sum_query
 
 
 def make_optimizer_class(cls):
@@ -224,6 +224,50 @@ def make_gaussian_optimizer_class(cls):
 
   return DPGaussianOptimizerClass
 
+
+def make_qac_optimizer_class(cls):
+  """Constructs a DP optimizer with Gaussian averaging of updates."""
+
+  class QACOptimizerClass(make_optimizer_class(cls)):
+    """DP subclass of given class cls using Gaussian averaging."""
+
+    def __init__(
+        self,
+        l2_norm_clip,
+        noise_multiplier,
+        num_microbatches=None,
+        ledger=None,
+        unroll_microbatches=False,
+        target_unclipped_quantile=0.8,
+        clipped_count_stddev=0.5,
+        *args,  # pylint: disable=keyword-arg-before-vararg
+        **kwargs):
+      dp_sum_query = quantile_adaptive_clip_sum_query.QuantileAdaptiveClipSumQuery(
+        initial_l2_norm_clip=l2_norm_clip,
+        noise_multiplier=noise_multiplier,
+        target_unclipped_quantile=target_unclipped_quantile,
+        learning_rate=kwargs['learning_rate'],
+        clipped_count_stddev=clipped_count_stddev,
+        expected_num_records=num_microbatches,
+      )
+
+      if ledger:
+        dp_sum_query = privacy_ledger.QueryWithLedger(dp_sum_query,
+                                                      ledger=ledger)
+
+      super(QACOptimizerClass, self).__init__(
+          dp_sum_query,
+          num_microbatches,
+          unroll_microbatches,
+          *args,
+          **kwargs)
+
+    @property
+    def ledger(self):
+      return self._dp_sum_query.ledger
+
+  return QACOptimizerClass
+
 AdagradOptimizer = tf.train.AdagradOptimizer
 AdamOptimizer = tf.train.AdamOptimizer
 GradientDescentOptimizer = tf.train.GradientDescentOptimizer
@@ -235,4 +279,9 @@ DPGradientDescentOptimizer = make_optimizer_class(GradientDescentOptimizer)
 DPAdagradGaussianOptimizer = make_gaussian_optimizer_class(AdagradOptimizer)
 DPAdamGaussianOptimizer = make_gaussian_optimizer_class(AdamOptimizer)
 DPGradientDescentGaussianOptimizer = make_gaussian_optimizer_class(
+    GradientDescentOptimizer)
+
+QACAdagradGaussianOptimizer = make_qac_optimizer_class(AdagradOptimizer)
+QACAdamGaussianOptimizer = make_qac_optimizer_class(AdamOptimizer)
+QACGradientDescentGaussianOptimizer = make_qac_optimizer_class(
     GradientDescentOptimizer)
