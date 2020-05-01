@@ -19,6 +19,7 @@ from __future__ import print_function
 
 from absl import logging
 
+from distutils.version import LooseVersion
 import tensorflow.compat.v1 as tf
 
 AdagradOptimizer = tf.train.AdagradOptimizer
@@ -46,6 +47,7 @@ def make_vectorized_optimizer_class(cls):
         l2_norm_clip,
         noise_multiplier,
         num_microbatches=None,
+        ledger=None,
         *args,  # pylint: disable=keyword-arg-before-vararg, g-doc-args
         **kwargs):
       """Initialize the DPOptimizerClass.
@@ -61,6 +63,7 @@ def make_vectorized_optimizer_class(cls):
       self._l2_norm_clip = l2_norm_clip
       self._noise_multiplier = noise_multiplier
       self._num_microbatches = num_microbatches
+      self._ledger = ledger
 
     def compute_gradients(self,
                           loss,
@@ -126,15 +129,41 @@ def make_vectorized_optimizer_class(cls):
         def reduce_noise_normalize_batch(stacked_grads):
           summed_grads = tf.reduce_sum(input_tensor=stacked_grads, axis=0)
           noise_stddev = self._l2_norm_clip * self._noise_multiplier
-          noise = tf.random.normal(
-              tf.shape(input=summed_grads), stddev=noise_stddev)
+          if LooseVersion(tf.__version__) < LooseVersion('2.0.0'):
+            noise = tf.random.normal(
+                tf.shape(input=summed_grads), stddev=noise_stddev)
+          else:
+            random_normal = tf.random_normal_initializer(
+              stddev=noise_stddev)
+            noise = tf.cast(random_normal(tf.shape(input=summed_grads)), dtype=summed_grads.dtype)
           noised_grads = summed_grads + noise
           return noised_grads / tf.cast(self._num_microbatches, tf.float32)
 
-        final_grads = tf.nest.map_structure(reduce_noise_normalize_batch,
-                                            clipped_grads)
+        if self._ledger:
+          dependencies = [
+            self._ledger.record_sum_query(
+              tf.cast(self._l2_norm_clip, tf.float32), tf.cast(self._l2_norm_clip * self._noise_multiplier, tf.float32))
+          ]
+        else:
+          dependencies = []
+
+        with tf.control_dependencies(dependencies):
+          final_grads = tf.nest.map_structure(reduce_noise_normalize_batch,
+                                              clipped_grads)
+
+        if self._ledger:
+          # Ensure inner queries have been computed have recorded before finalizing.
+          with tf.control_dependencies(tf.nest.flatten(final_grads)):
+            finalize = self._ledger.finalize_sample()
+          # Ensure finalizing happens.
+          with tf.control_dependencies([finalize]):
+            final_grads = tf.nest.map_structure(tf.identity, final_grads)
 
         return list(zip(final_grads, var_list))
+
+    @property
+    def ledger(self):
+      return self._dp_sum_query.ledger
 
   return DPOptimizerClass
 
