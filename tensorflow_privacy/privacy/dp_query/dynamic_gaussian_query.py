@@ -90,7 +90,7 @@ class ExpDynamicSumQuery(dp_query.SumAggregationDPQuery):
     return self._SampleState(preprocessed_sum_record)
 
   def dynamic_noise_multiplier(self, initial_noise_multiplier, k, global_step):
-    return initial_noise_multiplier * tf.exp(- k * global_step)
+    return initial_noise_multiplier * tf.exp(- k * tf.cast(global_step, tf.float32))
 
   def get_noised_result(self, sample_state, global_state):
     """See base class."""
