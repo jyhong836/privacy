@@ -89,25 +89,29 @@ class ExpDynamicSumQuery(dp_query.SumAggregationDPQuery):
         self._sum_query.preprocess_record_impl(params.sum_params, record))
     return self._SampleState(preprocessed_sum_record)
 
-  def dynamic_noise_multiplier(self, initial_noise_multiplier, k, global_step):
-    return initial_noise_multiplier * tf.exp(- k * tf.cast(global_step, tf.float32))
+  # def dynamic_noise_multiplier(self, initial_noise_multiplier, k, global_step):
+  #   return initial_noise_multiplier * tf.exp(- k * tf.cast(global_step, tf.float32))
 
   def get_noised_result(self, sample_state, global_state):
     """See base class."""
     gs = global_state
-
+    # FIXME what is the value for the initial sum_state? The stddev?
     noised_vectors, sum_state = self._sum_query.get_noised_result(
         sample_state.sum_state, gs.sum_state)
     # del sum_state  # Unused. To be set explicitly later.
 
-    new_noise_multiplier = self.dynamic_noise_multiplier(global_state.initial_noise_multiplier, global_state.k,
-                                                         global_state.step)
+    new_noise_multiplier = sum_state.stddev * tf.exp(- global_state.k)
+    # new_noise_multiplier = self.dynamic_noise_multiplier(global_state.initial_noise_multiplier, global_state.k,
+    #                                                      global_state.step)
+    new_noise_multiplier = tf.Print(new_noise_multiplier, [new_noise_multiplier])
     new_sum_stddev = global_state.l2_norm_clip * new_noise_multiplier
-    new_sum_query_global_state = sum_state._replace(stddev=new_sum_stddev)
+    new_sum_query_global_state = self._sum_query.make_global_state(l2_norm_clip=global_state.l2_norm_clip, stddev=new_sum_stddev)
 
     new_global_state = global_state._replace(
         step=global_state.step + 1,
         sum_state=new_sum_query_global_state)
+
+    # gs = new_global_state
 
     return noised_vectors, new_global_state
 
